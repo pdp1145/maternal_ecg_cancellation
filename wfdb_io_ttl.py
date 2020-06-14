@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import signal as sps
 import os
 import shutil
 import posixpath
@@ -14,21 +15,29 @@ sys.path.append("/home/pdp1145/fetal_ecg_det/wfdb_python_master/")
 import kymatio
 
 import wfdb
+import pywt
 
 arf = 12
 
 # record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/wfdb_python_master/sample-data/a103l')
-record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/ARR_03')
-mat_lead = record.p_signal[0:1000,0]
-fetal_lead = record.p_signal[0:1000,4]
+# record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/ARR_03')
+record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/NR_06')
+mat_lead = record.p_signal[0:5000,0]
+fetal_lead = record.p_signal[0:5000,5]
 
 x = np.arange(len(mat_lead))
 
 fig = go.Figure(data=go.Scatter(x=x, y=fetal_lead))
 fig = make_subplots(rows=2, cols=1)
-fig.append_trace(go.Scatter(x=x, y=fetal_lead, row=1, col=1))
-fig.append_trace(go.Scatter(x=x, y=mat_lead, row=2, col=1))
+fig.append_trace(go.Scatter(x=x, y=mat_lead), row=1, col=1)
+fig.append_trace(go.Scatter(x=x, y=fetal_lead), row=2, col=1)
 fig.show()
+
+
+widths = np.arange(1, 129)*0.75
+cwtmatr = sps.cwt(mat_lead, sps.ricker, widths)
+plt.imshow(cwtmatr, aspect='auto')   # , extent=[-1, 1, 1, 31], cmap='PRGn', aspect='auto', vmax=abs(cwtmatr).max(), vmin=-abs(cwtmatr).max())
+plt.show()
 
 
 arf = 14
