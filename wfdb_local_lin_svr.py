@@ -9,6 +9,7 @@ from sklearn.preprocessing import StandardScaler
 import os
 import shutil
 import posixpath
+import time
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -51,74 +52,69 @@ plt.imshow(cwt_trans)
 
 # SVR w/ single CWT vector -> fetal ECG:
 #
+# figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4"))
 
-wdw_lth_h = 2
-n_feats = wdw_lth_h*2*128
-wdw_beg = 1000
-wdw_end = 2000
-regr_idx = 0
-fetal_lead_wdw = np.zeros([(wdw_end - wdw_beg),])
-mat_lead_wdw = np.zeros([(wdw_end - wdw_beg),])
-cwt_wdw = np.zeros([(wdw_end - wdw_beg), n_feats])
+cwt_wdw_lth_h = 2
+n_feats = cwt_wdw_lth_h*2*128
+svr_wdw_lth = 120
+n_coef_tpls = 1000
+init_delay = 1000
 
-for wdw_idx in np.arange(wdw_beg, wdw_end):
-    fetal_lead_wdw[regr_idx] = fetal_lead[wdw_idx]
-    mat_lead_wdw[regr_idx] = mat_lead[wdw_idx]
-    blef = cwt_trans[wdw_idx - wdw_lth_h : wdw_idx + wdw_lth_h, :]
-    cwt_wdw[regr_idx,:] = blef.flatten()
-    regr_idx = regr_idx +1
+for svr_wdw_beg in np.arange(init_delay, init_delay + n_coef_tpls, 20):
 
-# reg = SGDRegressor(max_iter=10000, n_iter_no_change = 10, learning_rate = 'constant', early_stopping=True)
-# # reg.fit(cwt_trans[500:1000,:], fetal_lead[500:1000])
-# reg.fit(cwt_wdw, fetal_lead_wdw)
-# mat_pred=reg.predict(cwt_wdw)
-#
-# # plt.plot(fetal_lead, reg.predict(cwt_trans))
-# # plt.show()
-#
-# # figx = go.Figure(data=go.Scatter(x=x, y=fetal_lead))
-# figx = make_subplots(rows=2, cols=1)
-# figx.append_trace(go.Scatter(x=x, y=fetal_lead_wdw), row=1, col=1)
-# figx.append_trace(go.Scatter(x=x, y=mat_pred), row=2, col=1)
-# figx.show()
+    wdw_beg = svr_wdw_beg
+    wdw_end = wdw_beg + svr_wdw_lth
+    fetal_lead_wdw = np.zeros([(wdw_end - wdw_beg),])
+    mat_lead_wdw = np.zeros([(wdw_end - wdw_beg),])
+    cwt_wdw = np.zeros([(wdw_end - wdw_beg), n_feats])
+    regr_idx = 0
 
-# plt.plot(fetal_lead[500:700])
-# plt.plot(reg.predict(cwt_trans[500:700,:]))
-#
+    for wdw_idx in np.arange(wdw_beg, wdw_end):
+        fetal_lead_wdw[regr_idx] = fetal_lead[wdw_idx]
+        mat_lead_wdw[regr_idx] = mat_lead[wdw_idx]
+        blef = cwt_trans[wdw_idx - cwt_wdw_lth_h : wdw_idx + cwt_wdw_lth_h, :]
+        cwt_wdw[regr_idx,:] = blef.flatten()
+        regr_idx = regr_idx +1
 
-x_idxs = np.arange(len(fetal_lead))
+    x_idxs = np.arange(len(fetal_lead))
 
-# oresvr_rbf = SVR(kernel='rbf', C=1e2, gamma=0.0001)
-# y_rbf = oresvr_rbf.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
-# # y_rbf = svr_rbf.fit(cwt_trans[500:1000,:], fetal_lead[500:1000]).predict(cwt_trans[500:1000,:])
-#
-# figy = make_subplots(rows=2, cols=1, subplot_titles=("Maternal", "Fetal & RBF SVR Estimate"))
-# figy.append_trace(go.Scatter(x = x_idxs, y = mat_lead_wdw), row=1, col=1)
-# figy.append_trace(go.Scatter(x = x_idxs, y = fetal_lead_wdw), row=2, col=1)
-# figy.append_trace(go.Scatter(x = x_idxs, y = y_rbf), row=2, col=1)
-# figy.show()
+    nusv_res = NuSVR(nu=0.75, C=1.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=-1)
+    z_rbf = nusv_res.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
+    # z_rbf = nusv_res.fit(cwt_wdw, mat_lead_wdw).predict(cwt_wdw)
+    nusv_lin_coef = nusv_res.coef_
+    cwt_wdw_trans = np.transpose(cwt_wdw)
+    z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
+    z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + nusv_res.intercept_
 
+    fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
+    ax0.plot(mat_lead_wdw)
+    ax0.set_title('Maternal')
+    ax1.plot(fetal_lead_wdw)
+    ax1.set_title('Abdominal')
+    ax2.plot(z_cwt_xcoef_rs)
+    ax2.plot(z_rbf)
+    ax2.set_title('SVR Estimate')
+    mngr = plt.get_current_fig_manager()
+    mngr.full_screen_toggle()
+    fig_mpl.show()
+    time.sleep(5)
+    plt.close(fig_mpl)
 
-nusv_res = NuSVR(nu=0.75, C=1.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=-1)
-z_rbf = nusv_res.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
-# z_rbf = nusv_res.fit(cwt_wdw, mat_lead_wdw).predict(cwt_wdw)
-nusv_lin_coef = nusv_res.coef_
-cwt_wdw_trans = np.transpose(cwt_wdw)
-z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
-z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (1000,))
+    # figz.append_trace(go.Scatter(x = x_idxs, y = mat_lead_wdw), row=1, col=1)
+    # figz.append_trace(go.Scatter(x = x_idxs, y = fetal_lead_wdw), row=2, col=1)
+    # figz.append_trace(go.Scatter(x = x_idxs, y = z_cwt_xcoef_rs), row=3, col=1)
+    # figz.append_trace(go.Scatter(x = x_idxs, y = z_rbf), row=3, col=1)
+    # figz.show()
+    # figz.data = []
 
-figz = make_subplots(rows=2, cols=1, subplot_titles=("Maternal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4, Training Record Length = 5000"))
-figz.append_trace(go.Scatter(x = x_idxs, y = z_cwt_xcoef_rs), row=1, col=1)
-figz.append_trace(go.Scatter(x = x_idxs, y = z_rbf), row=1, col=1)
-figz.append_trace(go.Scatter(x = x_idxs, y = z_rbf), row=2, col=1)
-figz.show()
-
+    arf = 12
 # figz = make_subplots(rows=2, cols=1, subplot_titles=("Maternal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4, Training Record Length = 5000"))
 # figz.append_trace(go.Scatter(x = x_idxs, y = mat_lead_wdw), row=1, col=1)
 # figz.append_trace(go.Scatter(x = x_idxs, y = mat_lead_wdw), row=2, col=1)
 # figz.append_trace(go.Scatter(x = x_idxs, y = z_rbf), row=2, col=1)
 # figz.show()
 
+# matplotlib.pyplot.close()
 
 # Run trained SVR on full record:
 #
@@ -131,7 +127,7 @@ cwt_wdw = np.zeros([(wdw_end - wdw_beg), n_feats])
 for wdw_idx in np.arange(wdw_beg, wdw_end):
     fetal_lead_wdw[regr_idx] = fetal_lead[wdw_idx]
     mat_lead_wdw[regr_idx] = mat_lead[wdw_idx]
-    blef = cwt_trans[wdw_idx - wdw_lth_h : wdw_idx + wdw_lth_h, :]
+    blef = cwt_trans[wdw_idx - cwt_wdw_lth_h : wdw_idx + cwt_wdw_lth_h, :]
     cwt_wdw[regr_idx,:] = blef.flatten()
     regr_idx = regr_idx +1
 
