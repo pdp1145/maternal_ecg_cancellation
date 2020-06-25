@@ -157,7 +157,14 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + n_coef_tpls, wdw_shift):
         figz.append_trace(go.Scatter(x=abdominal_est_idxs, y=abdominal_est), row=3, col=1)
         figz.show()
         time.sleep(5.0)
+
+        np.save('maternal_fetal_feature_vectors', maternal_fetal_feature_vectors, allow_pickle=False)
+        np.save('maternal_feature_vectors', maternal_feature_vectors, allow_pickle=False)
+        np.save('linear_regression_coefs', linear_regression_coefs, allow_pickle=False)
+        np.save('linear_regression_intercepts', linear_regression_intercepts, allow_pickle=False)
         # figz.data = []
+
+    maternal_fetal_feature_vector = np.load('maternal_fetal_feature_vectors.npy')
 
     arf = 12
 # figz = make_subplots(rows=2, cols=1, subplot_titles=("Maternal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4, Training Record Length = 5000"))
