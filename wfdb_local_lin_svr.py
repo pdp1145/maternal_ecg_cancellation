@@ -10,6 +10,7 @@ import os
 import shutil
 import posixpath
 import time
+# from pynput import mouse
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -54,13 +55,20 @@ plt.imshow(cwt_trans)
 #
 # figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4"))
 
-cwt_wdw_lth_h = 2
+cwt_wdw_lth_h = 8
 n_feats = cwt_wdw_lth_h*2*128
-svr_wdw_lth = 120
+svr_wdw_lth = 32
 n_coef_tpls = 1000
 init_delay = 1000
+wdw_shift = 1
+# fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
 
-for svr_wdw_beg in np.arange(init_delay, init_delay + n_coef_tpls, 20):
+abdominal_est = np.zeros(n_coef_tpls,)
+abdominal_est_idxs = np.arange(0, n_coef_tpls)
+n_svrs = 1
+overlap_wdw_idx = 0
+
+for svr_wdw_beg in np.arange(init_delay, init_delay + n_coef_tpls, wdw_shift):
 
     wdw_beg = svr_wdw_beg
     wdw_end = wdw_beg + svr_wdw_lth
@@ -86,26 +94,41 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + n_coef_tpls, 20):
     z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
     z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + nusv_res.intercept_
 
-    fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
-    ax0.plot(mat_lead_wdw)
-    ax0.set_title('Maternal')
-    ax1.plot(fetal_lead_wdw)
-    ax1.set_title('Abdominal')
-    ax2.plot(z_cwt_xcoef_rs)
-    ax2.plot(z_rbf)
-    ax2.set_title('SVR Estimate')
-    mngr = plt.get_current_fig_manager()
-    mngr.full_screen_toggle()
-    fig_mpl.show()
-    time.sleep(5)
-    plt.close(fig_mpl)
+    abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)] = np.add(z_cwt_xcoef_rs, abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)])
+    overlap_wdw_idx = overlap_wdw_idx +1
+    n_svrs = n_svrs +1
 
-    # figz.append_trace(go.Scatter(x = x_idxs, y = mat_lead_wdw), row=1, col=1)
-    # figz.append_trace(go.Scatter(x = x_idxs, y = fetal_lead_wdw), row=2, col=1)
-    # figz.append_trace(go.Scatter(x = x_idxs, y = z_cwt_xcoef_rs), row=3, col=1)
-    # figz.append_trace(go.Scatter(x = x_idxs, y = z_rbf), row=3, col=1)
-    # figz.show()
-    # figz.data = []
+    # plt.close(fig_mpl)
+    # fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
+    # ax0.plot(mat_lead_wdw)
+    # ax0.set_title('Maternal')
+    # ax1.plot(fetal_lead_wdw)
+    # ax1.set_title('Abdominal')
+    # ax2.plot(z_cwt_xcoef_rs)
+    # ax2.plot(z_rbf)
+    # ax2.set_title('SVR Estimate')
+    # mngr = plt.get_current_fig_manager()
+    # mngr.full_screen_toggle()
+    # fig_mpl.show()
+
+    if((n_svrs % 50) == 1214):
+        figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal",
+                "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4, Training Record Length = 5000", "Abdominal Estimate"))
+        figz.append_trace(go.Scatter(x = x_idxs, y = mat_lead_wdw), row=1, col=1)
+        figz.append_trace(go.Scatter(x = x_idxs, y = fetal_lead_wdw), row=2, col=1)
+        figz.append_trace(go.Scatter(x = x_idxs, y = z_cwt_xcoef_rs), row=3, col=1)
+        figz.append_trace(go.Scatter(x = x_idxs, y = z_rbf), row=3, col=1)
+        figz.show()   
+        time.sleep(5.0)
+
+    if ((n_svrs % 50) == 0):
+        figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Abdominal Estimate"))
+        figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_delay : (init_delay + n_coef_tpls)]), row=1, col=1)
+        figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_delay : (init_delay + n_coef_tpls)]), row=2, col=1)
+        figz.append_trace(go.Scatter(x=abdominal_est_idxs, y=abdominal_est), row=3, col=1)
+        figz.show()
+        time.sleep(5.0)
+        # figz.data = []
 
     arf = 12
 # figz = make_subplots(rows=2, cols=1, subplot_titles=("Maternal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4, Training Record Length = 5000"))
