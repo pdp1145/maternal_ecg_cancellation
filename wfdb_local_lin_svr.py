@@ -89,10 +89,17 @@ abdominal_est = np.float32(np.zeros(rem_record_lth,))
 abdominal_est_idxs = np.arange(0, n_coef_tpls)
 n_svrs = 0
 overlap_wdw_idx = 0
-init = 0                # Skip initialization of regressor / template library
+init = 0
 
-if(init == 0):
-    for svr_wdw_beg in np.arange(init_delay, init_delay + n_coef_tpls - svr_wdw_lth, wdw_shift):
+if(init == 1):
+    maternal_fetal_feature_vectors = np.load('maternal_fetal_feature_vectors1k.npy')
+    maternal_feature_vectors = np.float32(np.load('maternal_feature_vectors1k.npy'))
+    linear_regression_coefs = np.float32(np.load('linear_regression_coefs1k.npy'))
+    linear_regression_intercepts = np.float32(np.load('linear_regression_intercepts1k.npy'))
+
+
+else:  # Skip initialization of regressor / template library
+    for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_lth -1, wdw_shift):
 
         wdw_beg = svr_wdw_beg
         wdw_end = wdw_beg + svr_wdw_lth
@@ -112,39 +119,63 @@ if(init == 0):
 
             regr_idx = regr_idx +1
 
-        maternal_feature_vectors[n_svrs, :] = cwt_wdw.flatten()
-        maternal_fetal_feature_vectors[n_svrs, :] = np.concatenate((cwt_wdw.flatten(), cwt_wdw_fetal.flatten()), axis = None)
-        x_idxs = np.arange(len(fetal_lead))
+        if(n_svrs < n_coef_tpls):       # Initialization phase (fill template library)
 
-        nusv_res = NuSVR(nu=0.75, C=1.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=-1)
-        z_rbf = nusv_res.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
-        # z_rbf = nusv_res.fit(cwt_wdw, mat_lead_wdw).predict(cwt_wdw)
+            maternal_feature_vectors[n_svrs, :] = cwt_wdw.flatten()
+            maternal_fetal_feature_vectors[n_svrs, :] = np.concatenate((cwt_wdw.flatten(), cwt_wdw_fetal.flatten()), axis = None)
 
-        nusv_lin_coef = np.float32(nusv_res.coef_)
+            nusv_res = NuSVR(nu=0.75, C=1.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=-1)
+            z_rbf = nusv_res.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
+            # z_rbf = nusv_res.fit(cwt_wdw, mat_lead_wdw).predict(cwt_wdw)
+
+            nusv_lin_coef = np.float32(nusv_res.coef_)
+
+            linear_regression_coefs[n_svrs, :] = np.float32(nusv_lin_coef)
+            linear_regression_intercepts[n_svrs] = np.float32(nusv_res.intercept_)
+
+        else:       # Estimates based on retrieved templates / update templates
+
+            # Maternal & fetal CWT templates centered on this sample:
+            maternal_feature_vector_s = cwt_wdw.flatten()
+            maternal_feature_vector_rs = np.reshape(maternal_feature_vector_s, (1, maternal_feature_vector_s.size))
+
+            maternal_fetal_feature_vector_s = np.concatenate((cwt_wdw.flatten(), cwt_wdw_fetal.flatten()), axis=None)
+
+            # Get k-nn maternal lead templates:
+            token_dists_knn = distance.cdist(maternal_feature_vector_rs, maternal_feature_vectors, metric='cityblock')
+
+            token_dists_knn_sorted_idxs = np.argsort(token_dists_knn).flatten()
+            token_dists_knn_fl = token_dists_knn.flatten()
+            token_dists_knn_sorted = token_dists_knn_fl[token_dists_knn_sorted_idxs]
+
+            #
+            # token_dist_knn_idxs = np.arange(len(token_dists_knn_sorted))
+            # fig = make_subplots(rows=1, cols=1)
+            # fig.append_trace(go.Scatter(x=token_dist_knn_idxs, y=token_dists_knn_sorted), row=1, col=1)
+            # fig.show()
+
+            # Retrieve regression coef's from best matches:
+            #
+            nusv_lin_coef = linear_regression_coefs[token_dists_knn_sorted_idxs[0], :]
+            nusv_intercept = linear_regression_intercepts[token_dists_knn_sorted_idxs[0]]
+
+            # # Generate abdominal signal estimates:
+            # #
+            # cwt_wdw_trans = np.transpose(cwt_wdw)
+            # z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
+            # z_cwt_xcoef_rs = z_cwt_xcoef + nusv_intercept
+
+        # Generate abdominal signal estimate for this window:
+        #
         cwt_wdw_trans = np.transpose(cwt_wdw)
         z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
         z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + np.float32(nusv_res.intercept_)
-
-        linear_regression_coefs[n_svrs, :] = np.float32(nusv_lin_coef)
-        linear_regression_intercepts[n_svrs] = np.float32(nusv_res.intercept_)
 
         abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)] = np.add(z_cwt_xcoef_rs, abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)])
 
         overlap_wdw_idx = overlap_wdw_idx +1
         n_svrs = n_svrs +1
 
-        # plt.close(fig_mpl)
-        # fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
-        # ax0.plot(mat_lead_wdw)
-        # ax0.set_title('Maternal')
-        # ax1.plot(fetal_lead_wdw)
-        # ax1.set_title('Abdominal')
-        # ax2.plot(z_cwt_xcoef_rs)
-        # ax2.plot(z_rbf)
-        # ax2.set_title('SVR Estimate')
-        # mngr = plt.get_current_fig_manager()
-        # mngr.full_screen_toggle()
-        # fig_mpl.show()
 
         if((n_svrs % 50) == 1214):
             figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal",
@@ -157,6 +188,7 @@ if(init == 0):
             time.sleep(5.0)
 
         if ((n_svrs % 250) == 0):
+            x_idxs = np.arange(len(fetal_lead))
             figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Abdominal Estimate"))
             figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_delay : (init_delay + n_coef_tpls)]), row=1, col=1)
             figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_delay : (init_delay + n_coef_tpls)]), row=2, col=1)
@@ -173,12 +205,6 @@ if(init == 0):
         if ((n_svrs % 25) == 0):
             print(['n_svrs:  ' + str(n_svrs)])
 
-else:
-
-    maternal_fetal_feature_vectors = np.load('maternal_fetal_feature_vectors1k.npy')
-    maternal_feature_vectors = np.float32(np.load('maternal_feature_vectors1k.npy'))
-    linear_regression_coefs = np.float32(np.load('linear_regression_coefs1k.npy'))
-    linear_regression_intercepts = np.float32(np.load('linear_regression_intercepts1k.npy'))
 
 # Get histogram of token - token distances for clustering:
 #
