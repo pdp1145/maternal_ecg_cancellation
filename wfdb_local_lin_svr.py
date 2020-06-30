@@ -17,6 +17,8 @@ import os
 import shutil
 import posixpath
 import time
+from timeit import default_timer as timer
+
 # from pynput import mouse
 
 import plotly.express as px
@@ -57,17 +59,17 @@ cwt_trans = np.float32(np.transpose(cwt_maternal_lead))
 cwt_trans_fetal = np.float32(np.transpose(cwt_fetal_lead))
 
 fig_cwt_mat, ax_cwt_mat = plt.subplots()
-ax_cwt_mat.imshow(cwt_maternal_lead, aspect='auto')
+ax_cwt_mat.imshow(cwt_maternal_lead[:, 0 : 1000], aspect='auto')
 time.sleep(5.0)
 fig_cwt_fetal, ax_cwt_fetal = plt.subplots()
-ax_cwt_fetal.imshow(cwt_fetal_lead, aspect='auto')
+ax_cwt_fetal.imshow(cwt_fetal_lead[:, 0 : 1000], aspect='auto')
 time.sleep(5.0)
 
 # SVR w/ single CWT vector -> fetal ECG:
 #
 # figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4"))
 
-cwt_wdw_lth_h = 8
+cwt_wdw_lth_h = 30
 n_feats = cwt_wdw_lth_h*2*128
 svr_wdw_lth = 64
 n_feats_maternal = n_feats*svr_wdw_lth
@@ -80,7 +82,8 @@ linear_regression_coefs = np.float32(np.zeros([n_coef_tpls, n_feats]))
 linear_regression_intercepts = np.float32(np.zeros([n_coef_tpls,]))
 
 n_maternal_fetal_feature_vectors = 0
-init_delay = 1000
+init_record_skip = 1000
+init_delay = init_record_skip
 wdw_shift = 1
 
 # fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
@@ -91,15 +94,20 @@ n_svrs = 0
 overlap_wdw_idx = 0
 init = 0
 
-if(init == 1):
+if(init == 1):  # Load initialized template library and regressors if already initialized
     maternal_fetal_feature_vectors = np.load('maternal_fetal_feature_vectors1k.npy')
     maternal_feature_vectors = np.float32(np.load('maternal_feature_vectors1k.npy'))
     linear_regression_coefs = np.float32(np.load('linear_regression_coefs1k.npy'))
     linear_regression_intercepts = np.float32(np.load('linear_regression_intercepts1k.npy'))
 
+    n_svrs = n_coef_tpls                # Skip past template library initialization
+    init_delay = init_delay + n_svrs
+    overlap_wdw_idx = overlap_wdw_idx + n_svrs
 
-else:  # Skip initialization of regressor / template library
-    for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_lth -1, wdw_shift):
+
+for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_lth -1, wdw_shift):
+
+        init_sect_beg = timer()
 
         wdw_beg = svr_wdw_beg
         wdw_end = wdw_beg + svr_wdw_lth
@@ -108,6 +116,9 @@ else:  # Skip initialization of regressor / template library
         cwt_wdw = np.float32(np.zeros([(wdw_end - wdw_beg), n_feats]))
         cwt_wdw_fetal = np.float32(np.zeros([(wdw_end - wdw_beg), n_feats]))
         regr_idx = 0
+        init_sect_end = timer()
+        # print(" Init sect elapsed time:  @  " + str(svr_wdw_beg) + "      "   +  str(init_sect_end - init_sect_beg))
+        init_sect_beg = timer()
 
         for wdw_idx in np.arange(wdw_beg, wdw_end):
 
@@ -118,13 +129,18 @@ else:  # Skip initialization of regressor / template library
             cwt_wdw_fetal[regr_idx,:] = cwt_trans[wdw_idx - cwt_wdw_lth_h : wdw_idx + cwt_wdw_lth_h, :].flatten()     # Extract feature vectors for regression & knn
 
             regr_idx = regr_idx +1
+            
+        init_sect_end = timer()
+        # print(" Array collection sect elapsed time:  @  " + str(svr_wdw_beg) + "      "   +  str(init_sect_end - init_sect_beg))
 
         if(n_svrs < n_coef_tpls):       # Initialization phase (fill template library)
+
+            init_sect_beg = timer()
 
             maternal_feature_vectors[n_svrs, :] = cwt_wdw.flatten()
             maternal_fetal_feature_vectors[n_svrs, :] = np.concatenate((cwt_wdw.flatten(), cwt_wdw_fetal.flatten()), axis = None)
 
-            nusv_res = NuSVR(nu=0.75, C=1.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=-1)
+            nusv_res = NuSVR(nu=0.99, C=10.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=10000)
             z_rbf = nusv_res.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
             # z_rbf = nusv_res.fit(cwt_wdw, mat_lead_wdw).predict(cwt_wdw)
 
@@ -132,6 +148,10 @@ else:  # Skip initialization of regressor / template library
 
             linear_regression_coefs[n_svrs, :] = np.float32(nusv_lin_coef)
             linear_regression_intercepts[n_svrs] = np.float32(nusv_res.intercept_)
+            nusv_intercept = np.float32(nusv_res.intercept_)
+            
+            init_sect_end = timer()
+            # print(" NuSVR sect elapsed time:  @  " + str(svr_wdw_beg) + "      " + str(init_sect_end - init_sect_beg))
 
         else:       # Estimates based on retrieved templates / update templates
 
@@ -169,9 +189,10 @@ else:  # Skip initialization of regressor / template library
         #
         cwt_wdw_trans = np.transpose(cwt_wdw)
         z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
-        z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + np.float32(nusv_res.intercept_)
+        z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + nusv_intercept
 
-        abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)] = np.add(z_cwt_xcoef_rs, abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)])
+        abdominal_est[(init_record_skip + overlap_wdw_idx) : (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
+                                np.add(z_cwt_xcoef_rs, abdominal_est[(init_record_skip + overlap_wdw_idx) : (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
 
         overlap_wdw_idx = overlap_wdw_idx +1
         n_svrs = n_svrs +1
@@ -188,18 +209,19 @@ else:  # Skip initialization of regressor / template library
             time.sleep(5.0)
 
         if ((n_svrs % 250) == 0):
-            x_idxs = np.arange(len(fetal_lead))
+            x_idxs = np.arange(init_record_skip, (init_record_skip + overlap_wdw_idx))
             figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Abdominal Estimate"))
-            figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_delay : (init_delay + n_coef_tpls)]), row=1, col=1)
-            figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_delay : (init_delay + n_coef_tpls)]), row=2, col=1)
-            figz.append_trace(go.Scatter(x=abdominal_est_idxs, y=abdominal_est), row=3, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=1, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=2, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=abdominal_est[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=3, col=1)
             figz.show()
-            time.sleep(5.0)
+            time.sleep(10.0)
 
-            np.save('maternal_fetal_feature_vectors1k', maternal_fetal_feature_vectors, allow_pickle=False)
-            np.save('maternal_feature_vectors1k', maternal_feature_vectors, allow_pickle=False)
-            np.save('linear_regression_coefs1k', linear_regression_coefs, allow_pickle=False)
-            np.save('linear_regression_intercepts1k', linear_regression_intercepts, allow_pickle=False)
+            if(init == 0):
+                np.save('maternal_fetal_feature_vectors1k', maternal_fetal_feature_vectors, allow_pickle=False)
+                np.save('maternal_feature_vectors1k', maternal_feature_vectors, allow_pickle=False)
+                np.save('linear_regression_coefs1k', linear_regression_coefs, allow_pickle=False)
+                np.save('linear_regression_intercepts1k', linear_regression_intercepts, allow_pickle=False)
             # figz.data = []
 
         if ((n_svrs % 25) == 0):
