@@ -38,7 +38,7 @@ record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/ARR_01')
 # record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/NR_06')
 # wfdb.plot_wfdb(record=record, title='Record a103l from Physionet Challenge 2015')
 
-rem_record_lth = 25000
+rem_record_lth = 20000
 
 mat_lead = np.float32(record.p_signal[0:rem_record_lth,0])
 fetal_lead = np.float32(record.p_signal[0:rem_record_lth,1])
@@ -51,7 +51,13 @@ fig.append_trace(go.Scatter(x=x, y=mat_lead), row=1, col=1)
 fig.append_trace(go.Scatter(x=x, y=fetal_lead), row=2, col=1)
 fig.show()
 
-widths = np.arange(1, 129)*0.75
+n_bpfs = 32
+scale_fac = 0.25  # 256/n_bpfs
+widths = np.arange(1, (n_bpfs+1))*scale_fac
+# widths = np.arange(1, 129)*0.75
+# widths = np.arange(1, 129)*0.75
+
+
 cwt_maternal_lead = np.float32(sps.cwt(mat_lead, sps.ricker, widths))
 cwt_fetal_lead = np.float32(sps.cwt(fetal_lead, sps.ricker, widths))
 
@@ -69,25 +75,32 @@ time.sleep(5.0)
 #
 # figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Maternal NuSVR Estimate: nu=0.75, Linear, C=1.0, CWT Window Length = 4"))
 
-cwt_wdw_lth_h = 30
-n_feats = cwt_wdw_lth_h*2*128
+cwt_wdw_lth_h = 2
+n_feats = cwt_wdw_lth_h*2*n_bpfs
 svr_wdw_lth = 64
 n_feats_maternal = n_feats*svr_wdw_lth
 n_feats_maternal_fetal = n_feats*2*svr_wdw_lth
-
-n_coef_tpls = 1000
+n_coef_tpls = 8000
+#
 maternal_feature_vectors = np.float32(np.zeros([n_coef_tpls, n_feats_maternal]))
 maternal_fetal_feature_vectors = np.float32(np.zeros([n_coef_tpls, n_feats_maternal_fetal]))
 linear_regression_coefs = np.float32(np.zeros([n_coef_tpls, n_feats]))
 linear_regression_intercepts = np.float32(np.zeros([n_coef_tpls,]))
+mat_lead_wdw_hist = np.float32(np.zeros([n_coef_tpls, svr_wdw_lth]))
+
+# maternal_feature_vectors = np.float32(np.zeros([n_coef_tpls, 12]))
+# maternal_fetal_feature_vectors = np.float32(np.zeros([n_coef_tpls, 12]))
+# linear_regression_coefs = np.float32(np.zeros([n_coef_tpls, 12]))
+# linear_regression_intercepts = np.float32(np.zeros([12,]))
 
 n_maternal_fetal_feature_vectors = 0
-init_record_skip = 1000
+init_record_skip = 2000
 init_delay = init_record_skip
 wdw_shift = 1
 
 # fig_mpl, (ax0, ax1, ax2) = plt.subplots(nrows=3)
 
+mat_lead_wdw_hist_arr = np.float32(np.zeros(rem_record_lth,))
 abdominal_est = np.float32(np.zeros(rem_record_lth,))
 abdominal_est_idxs = np.arange(0, n_coef_tpls)
 dist_arr = np.float32(np.zeros(rem_record_lth,))
@@ -127,7 +140,7 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             mat_lead_wdw[regr_idx] = mat_lead[wdw_idx]
 
             cwt_wdw[regr_idx,:] = cwt_trans[wdw_idx - cwt_wdw_lth_h : wdw_idx + cwt_wdw_lth_h, :].flatten()     # Extract feature vectors for regression & knn
-            cwt_wdw_fetal[regr_idx,:] = cwt_trans[wdw_idx - cwt_wdw_lth_h : wdw_idx + cwt_wdw_lth_h, :].flatten()     # Extract feature vectors for regression & knn
+            cwt_wdw_fetal[regr_idx,:] = cwt_trans_fetal[wdw_idx - cwt_wdw_lth_h : wdw_idx + cwt_wdw_lth_h, :].flatten()     # Extract feature vectors for regression & knn
 
             regr_idx = regr_idx +1
             
@@ -150,6 +163,8 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             linear_regression_coefs[n_svrs, :] = np.float32(nusv_lin_coef)
             linear_regression_intercepts[n_svrs] = np.float32(nusv_res.intercept_)
             nusv_intercept = np.float32(nusv_res.intercept_)
+
+            mat_lead_wdw_hist[n_svrs, :] = mat_lead_wdw         # Save maternal lead for this window
             
             init_sect_end = timer()
             # print(" NuSVR sect elapsed time:  @  " + str(svr_wdw_beg) + "      " + str(init_sect_end - init_sect_beg))
@@ -170,6 +185,12 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             token_dists_knn_sorted = token_dists_knn_fl[token_dists_knn_sorted_idxs]
             
             dist_arr[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth / 2)] = token_dists_knn_sorted[0]
+
+            mat_wdw_knn = mat_lead_wdw_hist[token_dists_knn_sorted_idxs[0],:]
+            mat_lead_wdw_hist_arr[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
+                np.add(mat_wdw_knn, mat_lead_wdw_hist_arr[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
+
+
 
             #
             # token_dist_knn_idxs = np.arange(len(token_dists_knn_sorted))
@@ -194,11 +215,11 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
         z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
         z_cwt_xcoef_rs = np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + nusv_intercept
 
-#        abdominal_est[(init_record_skip + overlap_wdw_idx) : (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
-#                               np.add(z_cwt_xcoef_rs, abdominal_est[(init_record_skip + overlap_wdw_idx) : (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
-        abdominal_est[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth/2)] = \
-                                np.add(z_cwt_xcoef_rs[int(svr_wdw_lth/2)], abdominal_est[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth/2)])
-
+        abdominal_est[(init_record_skip + overlap_wdw_idx) : (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
+                              np.add(z_cwt_xcoef_rs, abdominal_est[(init_record_skip + overlap_wdw_idx) : (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
+#        abdominal_est[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth/2)] = \
+#                                np.add(z_cwt_xcoef_rs[int(svr_wdw_lth/2)], abdominal_est[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth/2)])
+      
         overlap_wdw_idx = overlap_wdw_idx +1
         n_svrs = n_svrs +1
 
@@ -219,7 +240,9 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=1, col=1)
             figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=2, col=1)
             figz.append_trace(go.Scatter(x=x_idxs, y=abdominal_est[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=3, col=1)
-            figz.append_trace(go.Scatter(x=x_idxs, y=dist_arr[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=4, col=1)
+            # figz.append_trace(go.Scatter(x=x_idxs, y=dist_arr[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=4, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead_wdw_hist_arr[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=4, col=1)
+            
             figz.show()
             time.sleep(10.0)
 
