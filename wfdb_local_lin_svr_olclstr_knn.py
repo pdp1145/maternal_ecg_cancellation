@@ -58,10 +58,11 @@ rem_record_lth = 20000
 n_bpfs = 64
 scale_fac = 0.05  # 256/n_bpfs
 cwt_wdw_lth_h = 1
-svr_wdw_lth = 128
+svr_wdw_lth = 64
 svr_wdw_lth_inv = 1.0/float(svr_wdw_lth)
 n_coef_tpls = 1000
-k_nn = 20;
+k_nn = 50;
+abdominal_est_outlier_rem_fac = 0.25   # Percentage of abdominal estimates to remove as potential outliers
 init_record_skip = 1000
 wdw_shift = 1
 plot_freq = 4000
@@ -169,59 +170,65 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
 
             init_sect_beg = timer()
 
+            # Save maternal feature vectors & composite maternal / fetal feature vectors:
             maternal_feature_vectors[n_svrs, :] = cwt_wdw.flatten()
             maternal_fetal_feature_vectors[n_svrs, :] = np.concatenate((cwt_wdw.flatten(), cwt_wdw_fetal.flatten()), axis = None)
 
+            # Linear support vector regression: maternal -> abdominal
+            #
             nusv_res = NuSVR(nu=0.95, C=10.0, kernel='linear', degree=3, gamma='scale', coef0=0.0, shrinking=True, tol=0.001, cache_size=200, verbose=False, max_iter=10000)
             z_rbf = nusv_res.fit(cwt_wdw, fetal_lead_wdw).predict(cwt_wdw)
             # z_rbf = nusv_res.fit(cwt_wdw, mat_lead_wdw).predict(cwt_wdw)
 
+            # Store regression coef's & offset:
             nusv_lin_coef = np.float32(nusv_res.coef_)
-
-            linear_regression_coefs[n_svrs, :] = np.float32(nusv_lin_coef)
-            linear_regression_intercepts[n_svrs] = np.float32(nusv_res.intercept_)
             nusv_intercept = np.float32(nusv_res.intercept_)
 
-            mat_lead_wdw_hist[n_svrs, :] = mat_lead_wdw         # Save maternal lead for this window
+            linear_regression_coefs[n_svrs, :] = nusv_lin_coef
+            linear_regression_intercepts[n_svrs] = nusv_intercept
+
+            mat_lead_wdw_hist[n_svrs, :] = mat_lead_wdw         # Save maternal lead for this window (debug only)
             
-            init_sect_end = timer()
+            # it_sect_end = timer()
             # print(" NuSVR sect elapsed time:  @  " + str(svr_wdw_beg) + "      " + str(init_sect_end - init_sect_beg))
 
             # Generate abdominal signal estimate for this window:
-            #
+            #   - initialization region only
             cwt_wdw_trans = np.transpose(cwt_wdw)
             z_cwt_xcoef = np.matmul(nusv_lin_coef, cwt_wdw_trans)
             z_cwt_xcoef_rs = (np.reshape(z_cwt_xcoef, (svr_wdw_lth,)) + nusv_intercept) * svr_wdw_lth_inv
 
             abdominal_est[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
-                np.add(z_cwt_xcoef_rs, abdominal_est[(init_record_skip + overlap_wdw_idx): (
-                            init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
+                np.add(z_cwt_xcoef_rs, abdominal_est[(init_record_skip + overlap_wdw_idx): ( init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
+
         #        abdominal_est[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth/2)] = \
         #                                np.add(z_cwt_xcoef_rs[int(svr_wdw_lth/2)], abdominal_est[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth/2)])
 
-        else:       # Estimates based on retrieved templates / update templates
+        else:       # Estimates based on retrieved templates -> update templates
 
-            # Maternal & fetal CWT templates centered on this sample:
+            # Maternal CWT templates centered on this sample:
             maternal_feature_vector_s = cwt_wdw.flatten()
             maternal_feature_vector_rs = np.reshape(maternal_feature_vector_s, (1, maternal_feature_vector_s.size))
 
+            # Maternal & fetal CWT templates centered on this sample:
             maternal_fetal_feature_vector_s = np.concatenate((cwt_wdw.flatten(), cwt_wdw_fetal.flatten()), axis=None)
+            maternal_fetal_feature_vector_rs = np.reshape(maternal_fetal_feature_vector_s, (1, maternal_fetal_feature_vector_s.size))
 
             # Get k-nn maternal lead templates:
             token_dists_knn = distance.cdist(maternal_feature_vector_rs, maternal_feature_vectors, metric='cityblock')
-
             token_dists_knn_sorted_idxs = np.argsort(token_dists_knn).flatten()
+
+            # Sorted distances (for debug only for now):
             token_dists_knn_fl = token_dists_knn.flatten()
             token_dists_knn_sorted = token_dists_knn_fl[token_dists_knn_sorted_idxs]
-            
             dist_arr[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth / 2)] = token_dists_knn_sorted[0]
 
+            # Regenerate maternal lead from best matches to maternal lead: (debug only)
             mat_wdw_knn = mat_lead_wdw_hist[token_dists_knn_sorted_idxs[0],:]
             mat_lead_wdw_hist_arr[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
                 np.add(mat_wdw_knn, mat_lead_wdw_hist_arr[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
 
-
-
+            # Show sorted distances:
             #
             # token_dist_knn_idxs = np.arange(len(token_dists_knn_sorted))
             # fig = make_subplots(rows=1, cols=1)
@@ -231,6 +238,8 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             # Retrieve regression coef's from best matches:
             #
             k_fac_inv = 1.0  #  / float(k_nn)
+            n_core_ests = int((1.0 - abdominal_est_outlier_rem_fac)*k_nn)
+            # n_core_ests_inv = 1.0/float (n_core_ests)
             overlap_fac = svr_wdw_lth_inv * k_fac_inv
             z_cwt_xcoef_rs_sum = np.zeros((svr_wdw_lth,))
             z_cwt_xcoef_rs_mtx = np.zeros((k_nn, svr_wdw_lth))
@@ -255,13 +264,14 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             # Rank order window estimates using distance to mean window estimate:
             #
             z_cwt_xcoef_rs_mean = np.reshape(z_cwt_xcoef_rs_mean, (1,svr_wdw_lth))
-            wdw_est_dists = distance.cdist(z_cwt_xcoef_rs_mean, z_cwt_xcoef_rs_mtx, metric='cityblock')
+            wdw_est_dists = distance.cdist(z_cwt_xcoef_rs_mean, z_cwt_xcoef_rs_mtx, metric='euclidean')
 
             wdw_est_dists_sorted_idxs = np.argsort(wdw_est_dists).flatten()
             wdw_est_dists_fl = wdw_est_dists.flatten()
             wdw_est_dists_sorted = wdw_est_dists_fl[wdw_est_dists_sorted_idxs]
 
-            wdw_est_rmean = np.mean(z_cwt_xcoef_rs_mtx[wdw_est_dists_sorted_idxs,:], axis=0)
+            # Mean abdominal estimate for this window w/ outliers removed:
+            wdw_est_rmean = np.mean(z_cwt_xcoef_rs_mtx[wdw_est_dists_sorted_idxs[0 : n_core_ests],:], axis=0)*svr_wdw_lth_inv
 
             abdominal_est[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)] = \
                     np.add(wdw_est_rmean, abdominal_est[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
