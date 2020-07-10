@@ -5,6 +5,7 @@ from sklearn.svm import SVR, NuSVR, NuSVC
 from sklearn.neighbors import NearestNeighbors, DistanceMetric
 from scipy.spatial import distance_matrix
 from scipy.spatial import distance
+from scipy import stats as sc_stats
 
 # from sklearn.neighbors import DistanceMetric
 # from sklearn.cluster import KMeans
@@ -37,6 +38,9 @@ n_taps = 101
 f = 0.015
 fir_hipass = sps.firwin(n_taps, f, pass_zero=False)
 
+trimmed_mean_wdw_size = 256
+trim_fac = 0.25
+
 # n_taps = 11
 # f_hipass = 5.0
 # fir_hipass = sps.firwin(n_taps, f_hipass, width=None, window='hamming', pass_zero='highpass', scale=False, nyq=None, fs=1000.0)
@@ -50,28 +54,48 @@ figz.append_trace(go.Scatter(x=x_idxs, y=fir_hipass), row=1, col=1)
 figz.show()
 
 # record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/wfdb_python_master/sample-data/a103l')
-record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/ARR_01')
-# record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/NR_06')
+# record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/ARR_01')
+record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data/NR_02')
 # wfdb.plot_wfdb(record=record, title='Record a103l from Physionet Challenge 2015')
 
-rem_record_lth = 20000
-n_bpfs = 64
-scale_fac = 0.05  # 256/n_bpfs
-cwt_wdw_lth_h = 1
-svr_wdw_lth = 64
+# record = wfdb.rdrecord('/home/pdp1145/fetal_ecg_det/fetal_ecg_data_set_a/set-a/a03')
+# ann = wfdb.rdann('/home/pdp1145/fetal_ecg_det/fetal_ecg_data_set_a/set-a/a03', 'fqrs')
+
+
+rem_record_lth = record.sig_len
+n_bpfs = 128   # 64
+scale_fac = 0.5  # 256/n_bpfs
+cwt_wdw_lth_h = 8
+svr_wdw_lth = 128
 svr_wdw_lth_inv = 1.0/float(svr_wdw_lth)
 n_coef_tpls = 1000
-k_nn = 50;
+k_nn = 10
 abdominal_est_outlier_rem_fac = 0.25   # Percentage of abdominal estimates to remove as potential outliers
+template_update_fac = 0.1               # Update rate for the best match to current maternal/fetal feature vector
 init_record_skip = 1000
 wdw_shift = 1
-plot_freq = 4000
+plot_freq = 5000
 
 mat_lead_r = np.float32(record.p_signal[0:rem_record_lth,0])
-mat_lead = sps.convolve(mat_lead_r, fir_hipass, mode='same', method='direct')
+fetal_lead_r = np.float32(record.p_signal[0:rem_record_lth,2])
 
-fetal_lead_r = np.float32(record.p_signal[0:rem_record_lth,1])
-fetal_lead = sps.convolve(fetal_lead_r, fir_hipass, mode='same', method='direct')
+# mat_lead = sps.convolve(mat_lead_r, fir_hipass, mode='same', method='direct')
+# fetal_lead = sps.convolve(fetal_lead_r, fir_hipass, mode='same', method='direct')
+
+# Trimmed mean filtering:
+#
+mat_lead_med = np.zeros((rem_record_lth,))
+fetal_lead_med = np.zeros((rem_record_lth,))
+mat_lead = np.zeros((rem_record_lth,))
+fetal_lead = np.zeros((rem_record_lth,))
+
+trim_wdw_offset = int(trimmed_mean_wdw_size/2)
+for i in np.arange(0, rem_record_lth - trimmed_mean_wdw_size):
+    mat_lead_med[i+trim_wdw_offset] = sc_stats.trim_mean(mat_lead_r[i : i + trimmed_mean_wdw_size], trim_fac)
+    fetal_lead_med[i+trim_wdw_offset] = sc_stats.trim_mean(fetal_lead_r[i : i + trimmed_mean_wdw_size], trim_fac)
+
+mat_lead = np.subtract(mat_lead_r, mat_lead_med)
+fetal_lead = np.subtract(fetal_lead_r, fetal_lead_med)
 
 x = np.arange(len(mat_lead))
 fig = make_subplots(rows=2, cols=1, subplot_titles=("Raw Maternal Lead", "Filtered Maternal Lead"))
@@ -221,7 +245,7 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             # Sorted distances (for debug only for now):
             token_dists_knn_fl = token_dists_knn.flatten()
             token_dists_knn_sorted = token_dists_knn_fl[token_dists_knn_sorted_idxs]
-            dist_arr[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth / 2)] = token_dists_knn_sorted[0]
+            # dist_arr[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth / 2)] = token_dists_knn_sorted[0]
 
             # Regenerate maternal lead from best matches to maternal lead: (debug only)
             mat_wdw_knn = mat_lead_wdw_hist[token_dists_knn_sorted_idxs[0],:]
@@ -280,6 +304,26 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             #         np.add(z_cwt_xcoef_rs_sum, abdominal_est[(init_record_skip + overlap_wdw_idx): (init_record_skip + overlap_wdw_idx + svr_wdw_lth)])
 
 
+            #
+            #
+            # Now find closest maternal / fetal feature vector for this window & update template:
+            #
+
+            # Get k-nn maternal/fetal lead templates:
+            token_dists_knn = distance.cdist(maternal_fetal_feature_vector_rs, maternal_fetal_feature_vectors, metric='euclidean')
+            token_dists_knn_sorted_idxs = np.argsort(token_dists_knn).flatten()
+
+            # Update closest maternal / fetal template:
+            maternal_fetal_feature_vectors[token_dists_knn_sorted_idxs[0],:] = \
+                maternal_fetal_feature_vectors[token_dists_knn_sorted_idxs[0],:]*(1.0 - template_update_fac) + maternal_fetal_feature_vector_rs*template_update_fac
+
+            # Sorted distances (for debug only for now):
+            token_dists_knn_fl = token_dists_knn.flatten()
+            token_dists_knn_sorted = token_dists_knn_fl[token_dists_knn_sorted_idxs]
+            dist_arr[init_record_skip + overlap_wdw_idx + int(svr_wdw_lth / 2)] = token_dists_knn_sorted[0]
+
+
+
 #         # Generate abdominal signal estimate for this window:
 #         #
 #         cwt_wdw_trans = np.transpose(cwt_wdw)
@@ -306,13 +350,23 @@ for svr_wdw_beg in np.arange(init_delay, init_delay + rem_record_lth - svr_wdw_l
             time.sleep(5.0)
 
         if ((n_svrs % plot_freq) == 0):
-            x_idxs = np.arange(init_record_skip, (init_record_skip + overlap_wdw_idx))
+            x_idxs = np.arange(n_svrs - plot_freq, n_svrs)
             figz = make_subplots(rows=4, cols=1, subplot_titles=("Maternal", "Abdominal", "Abdominal Estimate"))
-            figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=1, col=1)
-            figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=2, col=1)
-            figz.append_trace(go.Scatter(x=x_idxs, y=abdominal_est[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=3, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[n_svrs - plot_freq : n_svrs]), row=1, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[n_svrs - plot_freq : n_svrs]), row=2, col=1)
+            figz.append_trace(go.Scatter(x=x_idxs, y=abdominal_est[n_svrs - plot_freq : n_svrs]), row=3, col=1)
+
+            abdominal_nmaternal = np.subtract(fetal_lead, abdominal_est)
+            figz.append_trace(go.Scatter(x=x_idxs, y=abdominal_nmaternal[n_svrs - plot_freq : n_svrs]), row=4, col=1)
+            # figz.append_trace(go.Scatter(x=x_idxs, y=dist_arr[n_svrs - plot_freq : n_svrs]), row=4, col=1)
+
+            # x_idxs = np.arange(init_record_skip, (init_record_skip + overlap_wdw_idx))
+            # figz = make_subplots(rows=4, cols=1, subplot_titles=("Maternal", "Abdominal", "Abdominal Estimate"))
+            # figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=1, col=1)
+            # figz.append_trace(go.Scatter(x=x_idxs, y=fetal_lead[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=2, col=1)
+            # figz.append_trace(go.Scatter(x=x_idxs, y=abdominal_est[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=3, col=1)
             # figz.append_trace(go.Scatter(x=x_idxs, y=dist_arr[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=4, col=1)
-            figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead_wdw_hist_arr[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=4, col=1)
+            # figz.append_trace(go.Scatter(x=x_idxs, y=mat_lead_wdw_hist_arr[init_record_skip : (init_record_skip + overlap_wdw_idx)]), row=4, col=1)
             
             figz.show()
             time.sleep(10.0)
@@ -402,10 +456,7 @@ for svr_wdw_beg in np.arange(post_init, post_init + rem_record_lth - svr_wdw_lth
     z_cwt_xcoef_rs = z_cwt_xcoef + nusv_intercept
 
     # Update abdominal signal estimate:
-    try:
-        abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)] = np.add(z_cwt_xcoef_rs, abdominal_est[overlap_wdw_idx: (overlap_wdw_idx + svr_wdw_lth)])
-    except:
-        arf = 22
+    abdominal_est[overlap_wdw_idx : (overlap_wdw_idx + svr_wdw_lth)] = np.add(z_cwt_xcoef_rs, abdominal_est[overlap_wdw_idx: (overlap_wdw_idx + svr_wdw_lth)])
 
     # x_idxs = np.arange(len(fetal_lead_wdw))
     # figz = make_subplots(rows=3, cols=1, subplot_titles=("Maternal", "Abdominal", "Abdominal Estimate"))
